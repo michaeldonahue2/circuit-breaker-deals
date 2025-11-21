@@ -1,0 +1,20 @@
+project_name: "CircuitBreaker"
+currency: "USD"
+
+# Sources: We are using RSS feeds because they are stable and don't require complex scraping
+sources:
+  - name: "TheVerge Deals"
+    url: "https://www.theverge.com/rss/label/deals/index.xml"
+  - name: "SlickDeals Tech"
+    url: "https://slickdeals.net/newsearch.php?mode=popdeals&searcharea=deals&searchin=first&sort=newest&q=tech&rss=1"
+
+# Filtering Logic
+filters:
+  keywords_exclude: ["refurbished", "open box", "used", "ebay", "clothing", "finance"]
+  
+content:
+  deals_per_issue: 5
+  tone: "witty, helpful, no-nonsense"
+  
+# This text will be appended to the bottom of every email
+footer_text: "Disclaimer: We may earn a commission if you buy through our links."
