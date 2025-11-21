@@ -3,8 +3,11 @@ import yaml
 import feedparser
 import requests
 import json
+import time
+import re
 from datetime import datetime
 from openai import OpenAI
+from bs4 import BeautifulSoup
 
 # --- CONFIG ---
 def load_config():
@@ -15,18 +18,59 @@ config = load_config()
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # --- AFFILIATE SETTINGS ---
-# This is your specific Amazon ID. The script will stamp this on every Amazon link.
 AMAZON_TAG = "circuitbrea0c-20" 
+
+# --- HELPER: EXTRACT REAL AMAZON LINK ---
+def extract_amazon_url(slickdeals_url):
+    """Visits the Slickdeals page and finds the hidden Amazon link."""
+    print(f"  - Digging for Amazon link in: {slickdeals_url[:40]}...")
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+    }
+    try:
+        # Be polite to the server
+        time.sleep(1) 
+        resp = requests.get(slickdeals_url, headers=headers, timeout=10)
+        soup = BeautifulSoup(resp.content, 'html.parser')
+        
+        # Find all links
+        all_links = soup.find_all('a', href=True)
+        
+        for link in all_links:
+            href = link['href']
+            # Look for Amazon links
+            if "amazon.com" in href:
+                # Sometimes SD wraps them, sometimes they are direct
+                # We want the clean URL. 
+                # If it's a redirect (slickdeals.net/?u2=...), we might just take the first one we find
+                # But usually, the "See Deal" button is what we want.
+                print(f"    -> Found Amazon Link!")
+                return href
+            
+            # Check for amzn.to shortlinks
+            if "amzn.to" in href:
+                return href
+                
+    except Exception as e:
+        print(f"    -> Failed to extract: {e}")
+    
+    return None
 
 # --- HELPER: MONETIZE LINKS ---
 def monetize_url(url):
-    """If it's an Amazon link, add our affiliate tag."""
-    if "amazon.com" in url and AMAZON_TAG:
-        # Check if URL already has parameters (use & or ?)
-        if "?" in url:
-            return url + f"&tag={AMAZON_TAG}"
+    """Stamps the link with your ID."""
+    if not url: return None
+    
+    if "amazon.com" in url:
+        # Remove existing tags if any
+        if "tag=" in url:
+            url = re.sub(r'tag=[^&]+', f'tag={AMAZON_TAG}', url)
+        elif "?" in url:
+            url = url + f"&tag={AMAZON_TAG}"
         else:
-            return url + f"?tag={AMAZON_TAG}"
+            url = url + f"?tag={AMAZON_TAG}"
+            
     return url
 
 # --- 1. INGEST ---
@@ -39,11 +83,11 @@ def fetch_deals():
         try:
             resp = requests.get(source['url'], headers=headers, timeout=10)
             feed = feedparser.parse(resp.content)
-            # Get top 3 from each source
-            for entry in feed.entries[:3]:
+            # Get top 4
+            for entry in feed.entries[:4]:
                 raw_deals.append({
                     "title": entry.title,
-                    "link": entry.link,
+                    "link": entry.link, # This starts as the Slickdeals link
                     "source": source['name'],
                     "date": datetime.now().strftime("%Y-%m-%d")
                 })
@@ -59,23 +103,34 @@ def filter_deals(deals):
         if d['link'] not in seen:
             seen.add(d['link'])
             unique.append(d)
-    return unique[:9] # Max 9 deals on homepage
+    return unique[:9] 
 
-# --- 3. AI ENRICHMENT ---
+# --- 3. ENRICH & REWRITE ---
 def ai_enrich(deals):
-    print("AI rewriting...")
+    print("Processing deals...")
     enriched = []
+    
     for deal in deals:
-        # 1. Monetize the link BEFORE we show it
+        # STEP A: If it's Slickdeals, try to find the REAL link
+        if "slickdeals.net" in deal['link']:
+            real_link = extract_amazon_url(deal['link'])
+            if real_link:
+                # If we found an Amazon link, swap it!
+                deal['link'] = real_link
+            else:
+                # If we couldn't find one, keep the SD link (better than nothing)
+                pass
+        
+        # STEP B: Monetize whatever link we have
         deal['link'] = monetize_url(deal['link'])
         
-        # 2. AI Processing
+        # STEP C: AI Writing
         try:
             prompt = f"""
             Analyze this deal: '{deal['title']}'.
             Return JSON with:
-            - 'headline': Short, punchy title (max 6 words).
-            - 'why_good': One sentence on why it's a steal.
+            - 'headline': Short title (max 6 words).
+            - 'why_good': One sentence reason to buy.
             - 'category': Tech, Home, or Audio.
             """
             resp = client.chat.completions.create(
@@ -86,12 +141,12 @@ def ai_enrich(deals):
             data = json.loads(resp.choices[0].message.content)
             deal.update(data)
             enriched.append(deal)
-        except Exception as e:
-            print(f"AI Failed: {e}")
-            deal['headline'] = deal['title'][:50] + "..."
-            deal['why_good'] = "Price drop detected."
+        except Exception:
+            deal['headline'] = deal['title'][:50]
+            deal['why_good'] = "Check price."
             deal['category'] = "Deal"
             enriched.append(deal)
+            
     return enriched
 
 # --- 4. GENERATE WEBSITE ---
@@ -112,7 +167,6 @@ def generate_site(deals):
             header {{ text-align: center; padding: 60px 0; border-bottom: 1px solid #334155; margin-bottom: 40px; }}
             h1 {{ font-size: 3rem; margin: 0; background: linear-gradient(to right, #38bdf8, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
             .date {{ color: #94a3b8; margin-top: 10px; }}
-            
             .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 25px; }}
             .card {{ background: var(--card); padding: 25px; border-radius: 12px; border: 1px solid #334155; transition: transform 0.2s; }}
             .card:hover {{ transform: translateY(-5px); border-color: var(--accent); }}
@@ -120,7 +174,6 @@ def generate_site(deals):
             .headline {{ font-size: 1.4rem; margin: 15px 0; font-weight: 700; color: white; text-decoration: none; display: block; }}
             .why {{ color: #94a3b8; line-height: 1.6; font-size: 0.95rem; }}
             .btn {{ display: inline-block; margin-top: 20px; background: var(--accent); color: #0f172a; padding: 10px 20px; text-decoration: none; border-radius: 6px; font-weight: bold; width: 100%; text-align: center; box-sizing: border-box; }}
-            
             footer {{ text-align: center; margin-top: 80px; color: #64748b; font-size: 0.9rem; }}
         </style>
     </head>
@@ -130,7 +183,6 @@ def generate_site(deals):
                 <h1>⚡ CircuitBreaker</h1>
                 <p class="date">Fresh Drops for {datetime.now().strftime("%B %d, %Y")}</p>
             </header>
-            
             <div class="grid">
     """
     
@@ -140,14 +192,14 @@ def generate_site(deals):
             <span class="tag">{deal['category']}</span>
             <a href="{deal['link']}" class="headline" target="_blank">{deal['headline']}</a>
             <p class="why">{deal['why_good']}</p>
-            <a href="{deal['link']}" class="btn" target="_blank">Check Price &rarr;</a>
+            <a href="{deal['link']}" class="btn" target="_blank">Get Deal on Amazon &rarr;</a>
         </div>
         """
         
     html += """
             </div>
             <footer>
-                <p>Managed by AI. Links may earn commission.</p>
+                <p>Managed by AI. Affiliate links earn support.</p>
             </footer>
         </div>
     </body>
@@ -156,7 +208,7 @@ def generate_site(deals):
     
     with open("index.html", "w") as f:
         f.write(html)
-    print("Website generated successfully.")
+    print("Website generated.")
 
 if __name__ == "__main__":
     raw = fetch_deals()
@@ -164,5 +216,3 @@ if __name__ == "__main__":
         filtered = filter_deals(raw)
         final = ai_enrich(filtered)
         generate_site(final)
-    else:
-        print("No deals found today.")
