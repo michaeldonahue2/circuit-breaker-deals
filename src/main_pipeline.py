@@ -4,10 +4,8 @@ import feedparser
 import requests
 import json
 import re
-import time
 from datetime import datetime
 from openai import OpenAI
-from bs4 import BeautifulSoup
 
 # --- CONFIG ---
 def load_config():
@@ -16,117 +14,81 @@ def load_config():
 
 config = load_config()
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+AMAZON_TAG = "circuitbrea0c-20"
 
-# --- AFFILIATE SETTINGS ---
-AMAZON_TAG = "circuitbrea0c-20" 
-
-# --- HELPER: CLEAN AND BUILD AMAZON LINKS ---
-def build_clean_amazon_url(dirty_url):
+# --- HELPER: FIND AMAZON ID (ASIN) ---
+def find_asin(text):
     """
-    Extracts the ASIN (Product ID) and builds a perfect link.
-    Returns None if no ASIN is found.
+    Hunts for an Amazon Product ID (ASIN) inside text or URLs.
+    Works even if the URL is encoded (common in RSS feeds).
     """
-    # Regex to find ASIN (starts with B0, 10 chars) or standard ISBN-10
-    # Matches: /dp/B0..., /gp/product/B0...
-    asin_match = re.search(r'/(?:dp|gp/product)/(B[A-Z0-9]{9}|[0-9]{10})', dirty_url)
+    if not text: return None
     
-    if asin_match:
-        asin = asin_match.group(1)
-        # Build the cleanest possible link
-        return f"https://www.amazon.com/dp/{asin}?tag={AMAZON_TAG}"
+    # Pattern A: Standard URL (/dp/B012345678)
+    # Pattern B: Encoded URL (%2Fdp%2FB012345678)
+    patterns = [
+        r'/dp/([A-Z0-9]{10})',
+        r'/gp/product/([A-Z0-9]{10})',
+        r'%2Fdp%2F([A-Z0-9]{10})',
+        r'%2Fgp%2Fproduct%2F([A-Z0-9]{10})',
+        r'amazon\.com.*/([A-Z0-9]{10})'
+    ]
     
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1) # Return just the ID (e.g. B08XYZ123)
     return None
 
-# --- HELPER: SCRAPE SLICKDEALS FOR HIDDEN LINKS ---
-def extract_amazon_url(slickdeals_url):
-    """Visits the Slickdeals page and hunts for an Amazon ASIN."""
-    print(f"  - Inspecting: {slickdeals_url[:40]}...")
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml'
-    }
-    try:
-        time.sleep(1.5) # Polite delay
-        resp = requests.get(slickdeals_url, headers=headers, timeout=10)
-        soup = BeautifulSoup(resp.content, 'html.parser')
-        
-        # Look at every link on the page
-        all_links = soup.find_all('a', href=True)
-        
-        for link in all_links:
-            href = link['href']
-            # If we find a link with an ASIN, we hit the jackpot
-            clean_link = build_clean_amazon_url(href)
-            if clean_link:
-                print(f"    -> Found Product: {clean_link}")
-                return clean_link
-                
-    except Exception as e:
-        print(f"    -> Scrape warning: {e}")
-    
-    return None
-
-# --- 1. INGEST ---
+# --- 1. INGEST & FILTER (STRICT) ---
 def fetch_deals():
-    print("Fetching deals...")
-    raw_deals = []
+    print("Fetching deals (Strict Amazon Mode)...")
+    valid_deals = []
     headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'}
     
     for source in config['sources']:
         try:
             resp = requests.get(source['url'], headers=headers, timeout=10)
             feed = feedparser.parse(resp.content)
-            for entry in feed.entries[:4]:
-                raw_deals.append({
-                    "title": entry.title,
-                    "link": entry.link,
-                    "source": source['name'],
-                    "date": datetime.now().strftime("%Y-%m-%d")
-                })
+            
+            for entry in feed.entries:
+                # 1. Search for ASIN in the Link AND the Description
+                content_blob = str(entry.link) + str(entry.get('summary', '')) + str(entry.get('content', ''))
+                asin = find_asin(content_blob)
+                
+                if asin:
+                    # WE FOUND ONE! Build the money link.
+                    money_link = f"https://www.amazon.com/dp/{asin}?tag={AMAZON_TAG}"
+                    
+                    valid_deals.append({
+                        "title": entry.title,
+                        "link": money_link, # Direct to Amazon
+                        "source": "Amazon",
+                        "date": datetime.now().strftime("%Y-%m-%d")
+                    })
+                    print(f"  [+] Found Amazon Deal: {asin}")
+                else:
+                    # Skip it. No money, no post.
+                    pass
+                    
         except Exception as e:
             print(f"Skipping {source['name']}: {e}")
-    return raw_deals
+            
+    # Remove duplicates
+    unique_deals = {d['link']:d for d in valid_deals}.values()
+    return list(unique_deals)[:9]
 
-# --- 2. FILTER ---
-def filter_deals(deals):
-    seen = set()
-    unique = []
-    for d in deals:
-        if d['link'] not in seen:
-            seen.add(d['link'])
-            unique.append(d)
-    return unique[:9] 
-
-# --- 3. ENRICH & REWRITE ---
+# --- 2. AI ENRICHMENT ---
 def ai_enrich(deals):
-    print("Processing deals...")
+    print("AI rewriting...")
     enriched = []
-    
     for deal in deals:
-        final_link = deal['link']
-        is_amazon = False
-        
-        # STEP A: If it's Slickdeals, try to find the Amazon Product
-        if "slickdeals.net" in deal['link']:
-            amazon_link = extract_amazon_url(deal['link'])
-            if amazon_link:
-                final_link = amazon_link
-                is_amazon = True
-            else:
-                # Safety Fallback: Use the original link if we can't find the product
-                # This prevents 404s. It sends them to SD, but that's better than a broken page.
-                final_link = deal['link']
-                is_amazon = False
-        
-        deal['link'] = final_link
-        
-        # STEP B: AI Writing
         try:
             prompt = f"""
-            Analyze this deal: '{deal['title']}'.
-            Return JSON with:
-            - 'headline': Short, punchy title (max 6 words).
-            - 'why_good': One sentence reason to buy.
+            Analyze deal title: '{deal['title']}'.
+            Return JSON:
+            - 'headline': Catchy title (max 6 words).
+            - 'why_good': 1 sentence benefit.
             - 'category': Tech, Home, or Audio.
             """
             resp = client.chat.completions.create(
@@ -136,25 +98,17 @@ def ai_enrich(deals):
             )
             data = json.loads(resp.choices[0].message.content)
             deal.update(data)
+            enriched.append(deal)
         except:
             deal['headline'] = deal['title'][:50]
-            deal['why_good'] = "Great price."
-            deal['category'] = "Deal"
-            
-        # Button Text Logic
-        if is_amazon:
-            deal['btn_text'] = "Buy on Amazon"
-        else:
-            deal['btn_text'] = "View Deal" # Fallback for non-Amazon
-            
-        enriched.append(deal)
-            
+            deal['why_good'] = "Great price detected."
+            deal['category'] = "Tech"
+            enriched.append(deal)
     return enriched
 
-# --- 4. GENERATE WEBSITE ---
+# --- 3. GENERATE WEBSITE ---
 def generate_site(deals):
     print("Generating index.html...")
-    
     html = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -188,13 +142,16 @@ def generate_site(deals):
             <div class="grid">
     """
     
+    if not deals:
+        html += "<p style='text-align:center; width:100%;'>Scanning for Amazon deals... Check back in 1 hour.</p>"
+    
     for deal in deals:
         html += f"""
         <div class="card">
             <span class="tag">{deal['category']}</span>
             <a href="{deal['link']}" class="headline" target="_blank">{deal['headline']}</a>
             <p class="why">{deal['why_good']}</p>
-            <a href="{deal['link']}" class="btn" target="_blank">{deal['btn_text']} &rarr;</a>
+            <a href="{deal['link']}" class="btn" target="_blank">Buy on Amazon &rarr;</a>
         </div>
         """
         
@@ -213,8 +170,8 @@ def generate_site(deals):
     print("Website generated.")
 
 if __name__ == "__main__":
-    raw = fetch_deals()
-    if raw:
-        filtered = filter_deals(raw)
-        final = ai_enrich(filtered)
-        generate_site(final)
+    # Run pipeline
+    final_deals = fetch_deals()
+    if final_deals:
+        final_deals = ai_enrich(final_deals)
+    generate_site(final_deals)
