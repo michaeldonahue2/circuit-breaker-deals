@@ -3,178 +3,153 @@ import yaml
 import feedparser
 import requests
 import json
-import time
 from datetime import datetime
 from openai import OpenAI
 
-# --- SETUP ---
+# --- CONFIG ---
 def load_config():
     with open("config/config.yaml", "r") as f:
         return yaml.safe_load(f)
 
 config = load_config()
-# Switch to gpt-4o-mini (cheaper, wider availability)
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-BEEHIIV_API_KEY = os.environ.get("BEEHIIV_API_KEY")
-BEEHIIV_PUB_ID = os.environ.get("BEEHIIV_PUB_ID")
 
-# --- HELPER: AUTO-FIND ID ---
-def get_publication_id():
-    if BEEHIIV_PUB_ID != "auto":
-        return BEEHIIV_PUB_ID
-    
-    print("Attempting to auto-detect Publication ID...")
-    url = "https://api.beehiiv.com/v2/publications"
-    headers = {"Authorization": f"Bearer {BEEHIIV_API_KEY}"}
-    
-    try:
-        resp = requests.get(url, headers=headers)
-        data = resp.json()
-        found_id = data['data'][0]['id']
-        print(f"Auto-detected ID: {found_id}")
-        return found_id
-    except Exception as e:
-        print(f"Could not auto-detect ID. Error: {e}")
-        return None
-
-# --- STEP 1: INGEST (With Anti-Block Headers) ---
+# --- 1. INGEST ---
 def fetch_deals():
-    print("--- Step 1: Fetching Deals ---")
+    print("Fetching deals...")
     raw_deals = []
-    # Fake being a browser to avoid blocks
     headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'}
     
     for source in config['sources']:
-        print(f"Checking {source['name']}...")
         try:
-            # Download feed manually first to pass headers
-            response = requests.get(source['url'], headers=headers, timeout=10)
-            feed = feedparser.parse(response.content)
-            
-            print(f"  - Found {len(feed.entries)} entries in feed.")
-            
-            for entry in feed.entries[:5]: # Limit to top 5 per source
+            resp = requests.get(source['url'], headers=headers, timeout=10)
+            feed = feedparser.parse(resp.content)
+            # Get top 3 from each source
+            for entry in feed.entries[:3]:
                 raw_deals.append({
                     "title": entry.title,
                     "link": entry.link,
-                    "summary": entry.get('summary', ''),
-                    "source": source['name']
+                    "source": source['name'],
+                    "date": datetime.now().strftime("%Y-%m-%d")
                 })
         except Exception as e:
-            print(f"Error fetching {source['name']}: {e}")
-            
-    print(f"Total raw deals found: {len(raw_deals)}")
+            print(f"Skipping {source['name']}: {e}")
     return raw_deals
 
-# --- STEP 2: FILTER ---
+# --- 2. FILTER ---
 def filter_deals(deals):
-    print("--- Step 2: Filtering ---")
-    filtered = []
-    excludes = [x.lower() for x in config['filters']['keywords_exclude']]
-    
-    for deal in deals:
-        title_lower = deal['title'].lower()
-        if any(bad_word in title_lower for bad_word in excludes):
-            continue
-        filtered.append(deal)
-        
-    # Deduplicate
-    unique_deals = {v['link']:v for v in filtered}.values()
-    final_list = list(unique_deals)[:config['content']['deals_per_issue']]
-    print(f"Deals passing filter: {len(final_list)}")
-    return final_list
+    seen = set()
+    unique = []
+    for d in deals:
+        if d['link'] not in seen:
+            seen.add(d['link'])
+            unique.append(d)
+    return unique[:9] # Max 9 deals on homepage
 
-# --- STEP 3: AI ENRICHMENT ---
-def ai_rewrite(deals):
-    print("--- Step 3: AI Writing ---")
+# --- 3. AI ENRICHMENT ---
+def ai_enrich(deals):
+    print("AI rewriting...")
     enriched = []
     for deal in deals:
-        print(f"Rewriting: {deal['title']}...")
-        prompt = f"""
-        Rewrite this tech deal for a newsletter.
-        Title: {deal['title']}
-        Link: {deal['link']}
-        
-        Output JSON with keys: "headline", "body", "cta".
-        Keep it short.
-        """
-        
         try:
-            # Using gpt-4o-mini is safer for new accounts
-            response = client.chat.completions.create(
-                model="gpt-4o-mini", 
+            # We ask AI for a price guess because RSS feeds often hide it
+            prompt = f"""
+            Analyze this deal: '{deal['title']}'.
+            Return JSON with:
+            - 'headline': Short, punchy title (max 6 words).
+            - 'why_good': One sentence on why it's a steal.
+            - 'category': Tech, Home, or Audio.
+            """
+            
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
-                response_format={ "type": "json_object" }
+                response_format={"type": "json_object"}
             )
-            content = json.loads(response.choices[0].message.content)
-            deal.update(content)
+            data = json.loads(resp.choices[0].message.content)
+            deal.update(data)
             enriched.append(deal)
         except Exception as e:
-            print(f"AI Error for '{deal['title']}': {e}")
-            # Fallback: Use original title if AI fails
-            deal['headline'] = deal['title']
-            deal['body'] = "Check out this deal."
-            deal['cta'] = "View Deal"
+            print(f"AI Failed: {e}")
+            deal['headline'] = deal['title'][:50] + "..."
+            deal['why_good'] = "Price drop detected."
+            deal['category'] = "Deal"
             enriched.append(deal)
-            
     return enriched
 
-# --- STEP 4: PUBLISH TO BEEHIIV ---
-def publish_draft(deals):
-    print("--- Step 4: Publishing to Beehiiv ---")
+# --- 4. GENERATE WEBSITE ---
+def generate_site(deals):
+    print("Generating index.html...")
     
-    if not deals:
-        print("No deals to publish. Aborting.")
-        return
-
-    pub_id = get_publication_id()
-    if not pub_id: return
-
-    date_str = datetime.now().strftime('%B %d, %Y')
+    # Modern Dark Mode Design
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>CircuitBreaker | Daily Tech Drops</title>
+        <style>
+            :root {{ --bg: #0f172a; --card: #1e293b; --text: #e2e8f0; --accent: #38bdf8; }}
+            body {{ font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; }}
+            .container {{ max-width: 1000px; margin: 0 auto; }}
+            header {{ text-align: center; padding: 60px 0; border-bottom: 1px solid #334155; margin-bottom: 40px; }}
+            h1 {{ font-size: 3rem; margin: 0; background: linear-gradient(to right, #38bdf8, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
+            .date {{ color: #94a3b8; margin-top: 10px; }}
+            
+            .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 25px; }}
+            .card {{ background: var(--card); padding: 25px; border-radius: 12px; border: 1px solid #334155; transition: transform 0.2s; }}
+            .card:hover {{ transform: translateY(-5px); border-color: var(--accent); }}
+            .tag {{ background: #0f172a; padding: 5px 10px; border-radius: 20px; font-size: 0.8rem; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; }}
+            .headline {{ font-size: 1.4rem; margin: 15px 0; font-weight: 700; color: white; text-decoration: none; display: block; }}
+            .why {{ color: #94a3b8; line-height: 1.6; font-size: 0.95rem; }}
+            .btn {{ display: inline-block; margin-top: 20px; background: var(--accent); color: #0f172a; padding: 10px 20px; text-decoration: none; border-radius: 6px; font-weight: bold; width: 100%; text-align: center; box-sizing: border-box; }}
+            
+            footer {{ text-align: center; margin-top: 80px; color: #64748b; font-size: 0.9rem; }}
+        </style>
+        
+        <!-- PASTE SKIMLINKS SCRIPT HERE LATER -->
+        
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <h1>⚡ CircuitBreaker</h1>
+                <p class="date">Fresh Drops for {datetime.now().strftime("%B %d, %Y")}</p>
+            </header>
+            
+            <div class="grid">
+    """
     
-    # BUILD HTML
-    html_content = f"<p>Top Tech Drops for {date_str}</p><br>"
     for deal in deals:
-        html_content += f"""
-        <h3><a href="{deal['link']}">{deal['headline']}</a></h3>
-        <p>{deal['body']}</p>
-        <p><a href="{deal['link']}">{deal['cta']} &rarr;</a></p>
-        <br>
+        html += f"""
+        <div class="card">
+            <span class="tag">{deal['category']}</span>
+            <a href="{deal['link']}" class="headline" target="_blank">{deal['headline']}</a>
+            <p class="why">{deal['why_good']}</p>
+            <a href="{deal['link']}" class="btn" target="_blank">Check Price &rarr;</a>
+        </div>
         """
-    html_content += f"<p><small>{config['footer_text']}</small></p>"
-
-    # PRINT HTML TO LOGS FOR DEBUGGING
-    print("GENERATED HTML PREVIEW:")
-    print(html_content[:500] + "...") 
-
-    url = f"https://api.beehiiv.com/v2/publications/{pub_id}/posts"
-    headers = {
-        "Authorization": f"Bearer {BEEHIIV_API_KEY}",
-        "Content-Type": "application/json"
-    }
+        
+    html += """
+            </div>
+            <footer>
+                <p>Managed by AI. Links may earn commission.</p>
+            </footer>
+        </div>
+    </body>
+    </html>
+    """
     
-    payload = {
-        "title": f"CircuitBreaker: {date_str}",
-        "content": {
-            "body": html_content,
-            "thumbnail": "" 
-        },
-        "audience": "all",
-        "platform": "both",
-        "status": "draft"
-    }
-    
-    resp = requests.post(url, json=payload, headers=headers)
-    if resp.status_code in [200, 201]:
-        print("SUCCESS: Draft created in Beehiiv!")
-    else:
-        print(f"FAILED: {resp.text}")
+    with open("index.html", "w") as f:
+        f.write(html)
+    print("Website generated successfully.")
 
 if __name__ == "__main__":
     raw = fetch_deals()
     if raw:
-        selected = filter_deals(raw)
-        final = ai_rewrite(selected) # Run even if selected is empty to see logs
-        publish_draft(final)
+        filtered = filter_deals(raw)
+        final = ai_enrich(filtered)
+        generate_site(final)
     else:
-        print("No raw deals found.")
+        print("No deals found today.")
