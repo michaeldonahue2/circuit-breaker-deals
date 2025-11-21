@@ -4,3 +4,4 @@ openai
 pyyaml
 beautifulsoup4
 lxml
+jinja2
