@@ -1,22 +1,33 @@
-name: CircuitBreaker Automation
+name: Update Website
 
 on:
-  workflow_dispatch: # Allows manual button click
   schedule:
-    - cron: '0 12 * * *' # Runs every day at 12:00 UTC (8am EST)
+    - cron: '0 12 * * *' # Runs daily at 8am EST
+  workflow_dispatch: # Manual Run Button
 
 jobs:
-  run-deals:
+  update-site:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v3
+      
       - uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+          
       - run: pip install -r requirements.txt
-      - name: Run Pipeline
+      
+      - name: Generate HTML
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          BEEHIIV_API_KEY: ${{ secrets.BEEHIIV_API_KEY }}
-          BEEHIIV_PUB_ID: ${{ secrets.BEEHIIV_PUB_ID }}
         run: python src/main_pipeline.py
+        
+      - name: Commit and Push
+        run: |
+          git config --global user.name 'CircuitBreaker Bot'
+          git config --global user.email 'bot@noreply.github.com'
+          git add index.html
+          git commit -m "Daily update" || echo "No changes"
+          git push
