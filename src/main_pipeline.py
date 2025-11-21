@@ -16,33 +16,41 @@ config = load_config()
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 AMAZON_TAG = "circuitbrea0c-20"
 
-# --- HELPER: FIND AMAZON ID (ASIN) ---
+# --- IMAGES & ASSETS ---
+FALLBACK_IMGS = {
+    "Tech": "https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=600&q=80",
+    "Audio": "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=600&q=80",
+    "Home": "https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=600&q=80",
+    "Default": "https://images.unsplash.com/photo-1518770660439-4636190af475?w=600&q=80"
+}
+
+# --- HELPER: EXTRACT IMAGE ---
+def extract_image(entry):
+    """Finds an image URL inside the RSS entry HTML."""
+    content = str(entry.get('summary', '')) + str(entry.get('content', ''))
+    # Look for <img src="...">
+    match = re.search(r'<img[^>]+src="([^">]+)"', content)
+    if match:
+        return match.group(1)
+    return None
+
+# --- HELPER: FIND ASIN ---
 def find_asin(text):
-    """
-    Hunts for an Amazon Product ID (ASIN) inside text or URLs.
-    Works even if the URL is encoded (common in RSS feeds).
-    """
     if not text: return None
-    
-    # Pattern A: Standard URL (/dp/B012345678)
-    # Pattern B: Encoded URL (%2Fdp%2FB012345678)
     patterns = [
         r'/dp/([A-Z0-9]{10})',
         r'/gp/product/([A-Z0-9]{10})',
         r'%2Fdp%2F([A-Z0-9]{10})',
-        r'%2Fgp%2Fproduct%2F([A-Z0-9]{10})',
         r'amazon\.com.*/([A-Z0-9]{10})'
     ]
-    
     for pattern in patterns:
         match = re.search(pattern, text)
-        if match:
-            return match.group(1) # Return just the ID (e.g. B08XYZ123)
+        if match: return match.group(1)
     return None
 
-# --- 1. INGEST & FILTER (STRICT) ---
+# --- 1. INGEST ---
 def fetch_deals():
-    print("Fetching deals (Strict Amazon Mode)...")
+    print("Fetching deals...")
     valid_deals = []
     headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'}
     
@@ -52,29 +60,23 @@ def fetch_deals():
             feed = feedparser.parse(resp.content)
             
             for entry in feed.entries:
-                # 1. Search for ASIN in the Link AND the Description
-                content_blob = str(entry.link) + str(entry.get('summary', '')) + str(entry.get('content', ''))
+                content_blob = str(entry.link) + str(entry.get('summary', ''))
                 asin = find_asin(content_blob)
                 
                 if asin:
-                    # WE FOUND ONE! Build the money link.
+                    img_url = extract_image(entry)
                     money_link = f"https://www.amazon.com/dp/{asin}?tag={AMAZON_TAG}"
                     
                     valid_deals.append({
                         "title": entry.title,
-                        "link": money_link, # Direct to Amazon
+                        "link": money_link,
+                        "img": img_url, 
                         "source": "Amazon",
                         "date": datetime.now().strftime("%Y-%m-%d")
                     })
-                    print(f"  [+] Found Amazon Deal: {asin}")
-                else:
-                    # Skip it. No money, no post.
-                    pass
-                    
         except Exception as e:
             print(f"Skipping {source['name']}: {e}")
             
-    # Remove duplicates
     unique_deals = {d['link']:d for d in valid_deals}.values()
     return list(unique_deals)[:9]
 
@@ -87,7 +89,7 @@ def ai_enrich(deals):
             prompt = f"""
             Analyze deal title: '{deal['title']}'.
             Return JSON:
-            - 'headline': Catchy title (max 6 words).
+            - 'headline': Catchy title (max 5 words).
             - 'why_good': 1 sentence benefit.
             - 'category': Tech, Home, or Audio.
             """
@@ -98,69 +100,94 @@ def ai_enrich(deals):
             )
             data = json.loads(resp.choices[0].message.content)
             deal.update(data)
+            
+            # Assign fallback image if none found
+            if not deal['img']:
+                cat = deal.get('category', 'Default')
+                deal['img'] = FALLBACK_IMGS.get(cat, FALLBACK_IMGS['Default'])
+                
             enriched.append(deal)
         except:
-            deal['headline'] = deal['title'][:50]
+            deal['headline'] = deal['title'][:40]
             deal['why_good'] = "Great price detected."
             deal['category'] = "Tech"
+            deal['img'] = FALLBACK_IMGS['Tech']
             enriched.append(deal)
     return enriched
 
 # --- 3. GENERATE WEBSITE ---
 def generate_site(deals):
     print("Generating index.html...")
+    
     html = f"""
     <!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>CircuitBreaker | Daily Tech Drops</title>
+        <title>CircuitBreaker | AI Deal Hunter</title>
         <style>
-            :root {{ --bg: #0f172a; --card: #1e293b; --text: #e2e8f0; --accent: #38bdf8; }}
-            body {{ font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; }}
-            .container {{ max-width: 1000px; margin: 0 auto; }}
-            header {{ text-align: center; padding: 60px 0; border-bottom: 1px solid #334155; margin-bottom: 40px; }}
-            h1 {{ font-size: 3rem; margin: 0; background: linear-gradient(to right, #38bdf8, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
-            .date {{ color: #94a3b8; margin-top: 10px; }}
-            .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 25px; }}
-            .card {{ background: var(--card); padding: 25px; border-radius: 12px; border: 1px solid #334155; transition: transform 0.2s; }}
-            .card:hover {{ transform: translateY(-5px); border-color: var(--accent); }}
-            .tag {{ background: #0f172a; padding: 5px 10px; border-radius: 20px; font-size: 0.8rem; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; }}
-            .headline {{ font-size: 1.4rem; margin: 15px 0; font-weight: 700; color: white; text-decoration: none; display: block; }}
-            .why {{ color: #94a3b8; line-height: 1.6; font-size: 0.95rem; }}
-            .btn {{ display: inline-block; margin-top: 20px; background: var(--accent); color: #0f172a; padding: 10px 20px; text-decoration: none; border-radius: 6px; font-weight: bold; width: 100%; text-align: center; box-sizing: border-box; }}
-            footer {{ text-align: center; margin-top: 80px; color: #64748b; font-size: 0.9rem; }}
+            :root {{ --bg: #0f172a; --card: #1e293b; --text: #f1f5f9; --accent: #0ea5e9; }}
+            body {{ font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; }}
+            
+            /* Hero Section */
+            .hero {{ text-align: center; padding: 80px 20px; background: radial-gradient(circle at top, #1e293b 0%, #0f172a 100%); border-bottom: 1px solid #334155; }}
+            h1 {{ font-size: 3.5rem; margin: 0; letter-spacing: -2px; background: linear-gradient(to right, #38bdf8, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
+            .subtitle {{ font-size: 1.2rem; color: #94a3b8; margin-top: 15px; font-weight: 300; }}
+            
+            /* Grid */
+            .container {{ max-width: 1200px; margin: 40px auto; padding: 0 20px; }}
+            .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 30px; }}
+            
+            /* Cards */
+            .card {{ background: var(--card); border-radius: 16px; overflow: hidden; border: 1px solid #334155; transition: all 0.3s ease; display: flex; flex-direction: column; }}
+            .card:hover {{ transform: translateY(-8px); box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3); border-color: var(--accent); }}
+            
+            .card-img {{ width: 100%; height: 200px; object-fit: cover; background: #334155; }}
+            .card-content {{ padding: 20px; flex-grow: 1; display: flex; flex-direction: column; }}
+            
+            .tag {{ font-size: 0.75rem; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 10px; display: block; }}
+            .headline {{ font-size: 1.25rem; font-weight: 700; margin: 0 0 10px 0; line-height: 1.4; }}
+            .why {{ color: #94a3b8; font-size: 0.95rem; line-height: 1.6; margin-bottom: 20px; flex-grow: 1; }}
+            
+            .btn {{ display: block; width: 100%; padding: 12px; background: var(--accent); color: white; text-align: center; text-decoration: none; font-weight: 600; border-radius: 8px; transition: background 0.2s; }}
+            .btn:hover {{ background: #0284c7; }}
+            
+            footer {{ text-align: center; padding: 50px; color: #64748b; font-size: 0.9rem; border-top: 1px solid #334155; margin-top: 50px; }}
         </style>
     </head>
     <body>
+        <div class="hero">
+            <h1>⚡ CircuitBreaker</h1>
+            <p class="subtitle">Let AI search the web for you to find the best deals.</p>
+        </div>
+        
         <div class="container">
-            <header>
-                <h1>⚡ CircuitBreaker</h1>
-                <p class="date">Fresh Drops for {datetime.now().strftime("%B %d, %Y")}</p>
-            </header>
             <div class="grid">
     """
     
     if not deals:
-        html += "<p style='text-align:center; width:100%;'>Scanning for Amazon deals... Check back in 1 hour.</p>"
-    
+        html += "<p style='grid-column: 1/-1; text-align: center;'>Scanning for new inventory... Update coming shortly.</p>"
+        
     for deal in deals:
         html += f"""
         <div class="card">
-            <span class="tag">{deal['category']}</span>
-            <a href="{deal['link']}" class="headline" target="_blank">{deal['headline']}</a>
-            <p class="why">{deal['why_good']}</p>
-            <a href="{deal['link']}" class="btn" target="_blank">Buy on Amazon &rarr;</a>
+            <img src="{deal['img']}" class="card-img" alt="Deal Image">
+            <div class="card-content">
+                <span class="tag">{deal['category']}</span>
+                <h3 class="headline">{deal['headline']}</h3>
+                <p class="why">{deal['why_good']}</p>
+                <a href="{deal['link']}" class="btn" target="_blank">Check Price on Amazon</a>
+            </div>
         </div>
         """
         
     html += """
             </div>
-            <footer>
-                <p>Managed by AI. Affiliate links earn support.</p>
-            </footer>
         </div>
+        <footer>
+            <p>Powered by CircuitBreaker AI. As an Amazon Associate we earn from qualifying purchases.</p>
+        </footer>
     </body>
     </html>
     """
@@ -170,8 +197,9 @@ def generate_site(deals):
     print("Website generated.")
 
 if __name__ == "__main__":
-    # Run pipeline
-    final_deals = fetch_deals()
-    if final_deals:
-        final_deals = ai_enrich(final_deals)
-    generate_site(final_deals)
+    raw = fetch_deals()
+    if raw:
+        final = ai_enrich(raw)
+        generate_site(final)
+    else:
+        generate_site([])
