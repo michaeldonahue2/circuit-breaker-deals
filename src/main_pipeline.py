@@ -6,7 +6,6 @@ import json
 import time
 from datetime import datetime
 from openai import OpenAI
-from bs4 import BeautifulSoup
 
 # --- SETUP ---
 def load_config():
@@ -18,6 +17,27 @@ client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 BEEHIIV_API_KEY = os.environ.get("BEEHIIV_API_KEY")
 BEEHIIV_PUB_ID = os.environ.get("BEEHIIV_PUB_ID")
 
+# --- HELPER: AUTO-FIND ID ---
+def get_publication_id():
+    """If the user put 'auto' in the secret, fetch the ID from API."""
+    if BEEHIIV_PUB_ID != "auto":
+        return BEEHIIV_PUB_ID
+    
+    print("Attempting to auto-detect Publication ID...")
+    url = "https://api.beehiiv.com/v2/publications"
+    headers = {"Authorization": f"Bearer {BEEHIIV_API_KEY}"}
+    
+    try:
+        resp = requests.get(url, headers=headers)
+        data = resp.json()
+        # Grab the first publication found
+        found_id = data['data'][0]['id']
+        print(f"Auto-detected ID: {found_id}")
+        return found_id
+    except Exception as e:
+        print(f"Could not auto-detect ID. Error: {e}")
+        return None
+
 # --- STEP 1: INGEST ---
 def fetch_deals():
     print("--- Step 1: Fetching Deals ---")
@@ -26,7 +46,7 @@ def fetch_deals():
         print(f"Checking {source['name']}...")
         try:
             feed = feedparser.parse(source['url'])
-            for entry in feed.entries[:10]: # Check top 10 from each
+            for entry in feed.entries[:10]:
                 raw_deals.append({
                     "title": entry.title,
                     "link": entry.link,
@@ -50,7 +70,6 @@ def filter_deals(deals):
             continue
         filtered.append(deal)
         
-    # Remove duplicates based on link
     unique_deals = {v['link']:v for v in filtered}.values()
     print(f"Deals after filtering: {len(unique_deals)}")
     return list(unique_deals)[:config['content']['deals_per_issue']]
@@ -81,7 +100,7 @@ def ai_rewrite(deals):
             content = json.loads(response.choices[0].message.content)
             deal.update(content)
             enriched.append(deal)
-            time.sleep(1) # Avoid rate limits
+            time.sleep(1)
         except Exception as e:
             print(f"AI Error: {e}")
             
@@ -91,7 +110,11 @@ def ai_rewrite(deals):
 def publish_draft(deals):
     print("--- Step 4: Publishing to Beehiiv ---")
     
-    # Build HTML
+    pub_id = get_publication_id()
+    if not pub_id:
+        print("CRITICAL: Could not find Publication ID. Aborting.")
+        return
+
     date_str = datetime.now().strftime('%B %d, %Y')
     html_content = f"<p>Good morning. Here are the top tech drops for {date_str}.</p><hr>"
     
@@ -106,7 +129,7 @@ def publish_draft(deals):
     
     html_content += f"<hr><p><small>{config['footer_text']}</small></p>"
 
-    url = f"https://api.beehiiv.com/v2/publications/{BEEHIIV_PUB_ID}/posts"
+    url = f"https://api.beehiiv.com/v2/publications/{pub_id}/posts"
     headers = {
         "Authorization": f"Bearer {BEEHIIV_API_KEY}",
         "Content-Type": "application/json"
@@ -120,7 +143,7 @@ def publish_draft(deals):
         },
         "audience": "all",
         "platform": "both",
-        "status": "draft" # Start as draft for safety
+        "status": "draft"
     }
     
     resp = requests.post(url, json=payload, headers=headers)
