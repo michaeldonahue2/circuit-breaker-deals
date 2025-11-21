@@ -14,6 +14,21 @@ def load_config():
 config = load_config()
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
+# --- AFFILIATE SETTINGS ---
+# This is your specific Amazon ID. The script will stamp this on every Amazon link.
+AMAZON_TAG = "circuitbrea0c-20" 
+
+# --- HELPER: MONETIZE LINKS ---
+def monetize_url(url):
+    """If it's an Amazon link, add our affiliate tag."""
+    if "amazon.com" in url and AMAZON_TAG:
+        # Check if URL already has parameters (use & or ?)
+        if "?" in url:
+            return url + f"&tag={AMAZON_TAG}"
+        else:
+            return url + f"?tag={AMAZON_TAG}"
+    return url
+
 # --- 1. INGEST ---
 def fetch_deals():
     print("Fetching deals...")
@@ -51,8 +66,11 @@ def ai_enrich(deals):
     print("AI rewriting...")
     enriched = []
     for deal in deals:
+        # 1. Monetize the link BEFORE we show it
+        deal['link'] = monetize_url(deal['link'])
+        
+        # 2. AI Processing
         try:
-            # We ask AI for a price guess because RSS feeds often hide it
             prompt = f"""
             Analyze this deal: '{deal['title']}'.
             Return JSON with:
@@ -60,7 +78,6 @@ def ai_enrich(deals):
             - 'why_good': One sentence on why it's a steal.
             - 'category': Tech, Home, or Audio.
             """
-            
             resp = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
@@ -81,7 +98,6 @@ def ai_enrich(deals):
 def generate_site(deals):
     print("Generating index.html...")
     
-    # Modern Dark Mode Design
     html = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -107,9 +123,6 @@ def generate_site(deals):
             
             footer {{ text-align: center; margin-top: 80px; color: #64748b; font-size: 0.9rem; }}
         </style>
-        
-        <!-- PASTE SKIMLINKS SCRIPT HERE LATER -->
-        
     </head>
     <body>
         <div class="container">
