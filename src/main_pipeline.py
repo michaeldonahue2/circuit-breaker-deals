@@ -3,8 +3,8 @@ import yaml
 import feedparser
 import requests
 import json
-import time
 import re
+import time
 from datetime import datetime
 from openai import OpenAI
 from bs4 import BeautifulSoup
@@ -20,58 +20,51 @@ client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 # --- AFFILIATE SETTINGS ---
 AMAZON_TAG = "circuitbrea0c-20" 
 
-# --- HELPER: EXTRACT REAL AMAZON LINK ---
+# --- HELPER: CLEAN AND BUILD AMAZON LINKS ---
+def build_clean_amazon_url(dirty_url):
+    """
+    Extracts the ASIN (Product ID) and builds a perfect link.
+    Returns None if no ASIN is found.
+    """
+    # Regex to find ASIN (starts with B0, 10 chars) or standard ISBN-10
+    # Matches: /dp/B0..., /gp/product/B0...
+    asin_match = re.search(r'/(?:dp|gp/product)/(B[A-Z0-9]{9}|[0-9]{10})', dirty_url)
+    
+    if asin_match:
+        asin = asin_match.group(1)
+        # Build the cleanest possible link
+        return f"https://www.amazon.com/dp/{asin}?tag={AMAZON_TAG}"
+    
+    return None
+
+# --- HELPER: SCRAPE SLICKDEALS FOR HIDDEN LINKS ---
 def extract_amazon_url(slickdeals_url):
-    """Visits the Slickdeals page and finds the hidden Amazon link."""
-    print(f"  - Digging for Amazon link in: {slickdeals_url[:40]}...")
+    """Visits the Slickdeals page and hunts for an Amazon ASIN."""
+    print(f"  - Inspecting: {slickdeals_url[:40]}...")
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml'
     }
     try:
-        # Be polite to the server
-        time.sleep(1) 
+        time.sleep(1.5) # Polite delay
         resp = requests.get(slickdeals_url, headers=headers, timeout=10)
         soup = BeautifulSoup(resp.content, 'html.parser')
         
-        # Find all links
+        # Look at every link on the page
         all_links = soup.find_all('a', href=True)
         
         for link in all_links:
             href = link['href']
-            # Look for Amazon links
-            if "amazon.com" in href:
-                # Sometimes SD wraps them, sometimes they are direct
-                # We want the clean URL. 
-                # If it's a redirect (slickdeals.net/?u2=...), we might just take the first one we find
-                # But usually, the "See Deal" button is what we want.
-                print(f"    -> Found Amazon Link!")
-                return href
-            
-            # Check for amzn.to shortlinks
-            if "amzn.to" in href:
-                return href
+            # If we find a link with an ASIN, we hit the jackpot
+            clean_link = build_clean_amazon_url(href)
+            if clean_link:
+                print(f"    -> Found Product: {clean_link}")
+                return clean_link
                 
     except Exception as e:
-        print(f"    -> Failed to extract: {e}")
+        print(f"    -> Scrape warning: {e}")
     
     return None
-
-# --- HELPER: MONETIZE LINKS ---
-def monetize_url(url):
-    """Stamps the link with your ID."""
-    if not url: return None
-    
-    if "amazon.com" in url:
-        # Remove existing tags if any
-        if "tag=" in url:
-            url = re.sub(r'tag=[^&]+', f'tag={AMAZON_TAG}', url)
-        elif "?" in url:
-            url = url + f"&tag={AMAZON_TAG}"
-        else:
-            url = url + f"?tag={AMAZON_TAG}"
-            
-    return url
 
 # --- 1. INGEST ---
 def fetch_deals():
@@ -83,11 +76,10 @@ def fetch_deals():
         try:
             resp = requests.get(source['url'], headers=headers, timeout=10)
             feed = feedparser.parse(resp.content)
-            # Get top 4
             for entry in feed.entries[:4]:
                 raw_deals.append({
                     "title": entry.title,
-                    "link": entry.link, # This starts as the Slickdeals link
+                    "link": entry.link,
                     "source": source['name'],
                     "date": datetime.now().strftime("%Y-%m-%d")
                 })
@@ -111,25 +103,29 @@ def ai_enrich(deals):
     enriched = []
     
     for deal in deals:
-        # STEP A: If it's Slickdeals, try to find the REAL link
+        final_link = deal['link']
+        is_amazon = False
+        
+        # STEP A: If it's Slickdeals, try to find the Amazon Product
         if "slickdeals.net" in deal['link']:
-            real_link = extract_amazon_url(deal['link'])
-            if real_link:
-                # If we found an Amazon link, swap it!
-                deal['link'] = real_link
+            amazon_link = extract_amazon_url(deal['link'])
+            if amazon_link:
+                final_link = amazon_link
+                is_amazon = True
             else:
-                # If we couldn't find one, keep the SD link (better than nothing)
-                pass
+                # Safety Fallback: Use the original link if we can't find the product
+                # This prevents 404s. It sends them to SD, but that's better than a broken page.
+                final_link = deal['link']
+                is_amazon = False
         
-        # STEP B: Monetize whatever link we have
-        deal['link'] = monetize_url(deal['link'])
+        deal['link'] = final_link
         
-        # STEP C: AI Writing
+        # STEP B: AI Writing
         try:
             prompt = f"""
             Analyze this deal: '{deal['title']}'.
             Return JSON with:
-            - 'headline': Short title (max 6 words).
+            - 'headline': Short, punchy title (max 6 words).
             - 'why_good': One sentence reason to buy.
             - 'category': Tech, Home, or Audio.
             """
@@ -140,12 +136,18 @@ def ai_enrich(deals):
             )
             data = json.loads(resp.choices[0].message.content)
             deal.update(data)
-            enriched.append(deal)
-        except Exception:
+        except:
             deal['headline'] = deal['title'][:50]
-            deal['why_good'] = "Check price."
+            deal['why_good'] = "Great price."
             deal['category'] = "Deal"
-            enriched.append(deal)
+            
+        # Button Text Logic
+        if is_amazon:
+            deal['btn_text'] = "Buy on Amazon"
+        else:
+            deal['btn_text'] = "View Deal" # Fallback for non-Amazon
+            
+        enriched.append(deal)
             
     return enriched
 
@@ -192,7 +194,7 @@ def generate_site(deals):
             <span class="tag">{deal['category']}</span>
             <a href="{deal['link']}" class="headline" target="_blank">{deal['headline']}</a>
             <p class="why">{deal['why_good']}</p>
-            <a href="{deal['link']}" class="btn" target="_blank">Get Deal on Amazon &rarr;</a>
+            <a href="{deal['link']}" class="btn" target="_blank">{deal['btn_text']} &rarr;</a>
         </div>
         """
         
