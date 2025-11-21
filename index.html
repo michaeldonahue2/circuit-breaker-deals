@@ -4,51 +4,51 @@
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>CircuitBreaker | Daily Tech Drops</title>
+        <title>CircuitBreaker | AI Deal Hunter</title>
         <style>
-            :root { --bg: #0f172a; --card: #1e293b; --text: #e2e8f0; --accent: #38bdf8; }
-            body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; }
-            .container { max-width: 1000px; margin: 0 auto; }
-            header { text-align: center; padding: 60px 0; border-bottom: 1px solid #334155; margin-bottom: 40px; }
-            h1 { font-size: 3rem; margin: 0; background: linear-gradient(to right, #38bdf8, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-            .date { color: #94a3b8; margin-top: 10px; }
-            .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 25px; }
-            .card { background: var(--card); padding: 25px; border-radius: 12px; border: 1px solid #334155; transition: transform 0.2s; }
-            .card:hover { transform: translateY(-5px); border-color: var(--accent); }
-            .tag { background: #0f172a; padding: 5px 10px; border-radius: 20px; font-size: 0.8rem; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; }
-            .headline { font-size: 1.4rem; margin: 15px 0; font-weight: 700; color: white; text-decoration: none; display: block; }
-            .why { color: #94a3b8; line-height: 1.6; font-size: 0.95rem; }
-            .btn { display: inline-block; margin-top: 20px; background: var(--accent); color: #0f172a; padding: 10px 20px; text-decoration: none; border-radius: 6px; font-weight: bold; width: 100%; text-align: center; box-sizing: border-box; }
-            footer { text-align: center; margin-top: 80px; color: #64748b; font-size: 0.9rem; }
+            :root { --bg: #0f172a; --card: #1e293b; --text: #f1f5f9; --accent: #0ea5e9; }
+            body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; }
+            
+            /* Hero Section */
+            .hero { text-align: center; padding: 80px 20px; background: radial-gradient(circle at top, #1e293b 0%, #0f172a 100%); border-bottom: 1px solid #334155; }
+            h1 { font-size: 3.5rem; margin: 0; letter-spacing: -2px; background: linear-gradient(to right, #38bdf8, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+            .subtitle { font-size: 1.2rem; color: #94a3b8; margin-top: 15px; font-weight: 300; }
+            
+            /* Grid */
+            .container { max-width: 1200px; margin: 40px auto; padding: 0 20px; }
+            .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 30px; }
+            
+            /* Cards */
+            .card { background: var(--card); border-radius: 16px; overflow: hidden; border: 1px solid #334155; transition: all 0.3s ease; display: flex; flex-direction: column; }
+            .card:hover { transform: translateY(-8px); box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3); border-color: var(--accent); }
+            
+            .card-img { width: 100%; height: 200px; object-fit: cover; background: #334155; }
+            .card-content { padding: 20px; flex-grow: 1; display: flex; flex-direction: column; }
+            
+            .tag { font-size: 0.75rem; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 10px; display: block; }
+            .headline { font-size: 1.25rem; font-weight: 700; margin: 0 0 10px 0; line-height: 1.4; }
+            .why { color: #94a3b8; font-size: 0.95rem; line-height: 1.6; margin-bottom: 20px; flex-grow: 1; }
+            
+            .btn { display: block; width: 100%; padding: 12px; background: var(--accent); color: white; text-align: center; text-decoration: none; font-weight: 600; border-radius: 8px; transition: background 0.2s; }
+            .btn:hover { background: #0284c7; }
+            
+            footer { text-align: center; padding: 50px; color: #64748b; font-size: 0.9rem; border-top: 1px solid #334155; margin-top: 50px; }
         </style>
     </head>
     <body>
+        <div class="hero">
+            <h1>⚡ CircuitBreaker</h1>
+            <p class="subtitle">Let AI search the web for you to find the best deals.</p>
+        </div>
+        
         <div class="container">
-            <header>
-                <h1>⚡ CircuitBreaker</h1>
-                <p class="date">Fresh Drops for November 21, 2025</p>
-            </header>
             <div class="grid">
-    
-        <div class="card">
-            <span class="tag">Tech</span>
-            <a href="https://www.amazon.com/dp/B0CTRVYH8D?tag=circuitbrea0c-20" class="headline" target="_blank">Dickies Men's Dri-Tech Original Moisture Control C</a>
-            <p class="why">Great price detected.</p>
-            <a href="https://www.amazon.com/dp/B0CTRVYH8D?tag=circuitbrea0c-20" class="btn" target="_blank">Buy on Amazon &rarr;</a>
-        </div>
-        
-        <div class="card">
-            <span class="tag">Tech</span>
-            <a href="https://www.amazon.com/dp/B08FDGXQY7?tag=circuitbrea0c-20" class="headline" target="_blank">$10: 10-Pack Tech Deck DLX Pro Collectible Fingerb</a>
-            <p class="why">Great price detected.</p>
-            <a href="https://www.amazon.com/dp/B08FDGXQY7?tag=circuitbrea0c-20" class="btn" target="_blank">Buy on Amazon &rarr;</a>
-        </div>
-        
+    <p style='grid-column: 1/-1; text-align: center;'>Scanning for new inventory... Update coming shortly.</p>
             </div>
-            <footer>
-                <p>Managed by AI. Affiliate links earn support.</p>
-            </footer>
         </div>
+        <footer>
+            <p>Powered by CircuitBreaker AI. As an Amazon Associate we earn from qualifying purchases.</p>
+        </footer>
     </body>
     </html>
     
