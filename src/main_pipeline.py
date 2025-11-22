@@ -4,7 +4,7 @@ import feedparser
 import requests
 import json
 import re
-import time
+import urllib.parse
 from datetime import datetime
 from openai import OpenAI
 
@@ -19,26 +19,18 @@ AMAZON_TAG = "circuitbrea0c-20"
 
 # --- ASSETS ---
 FALLBACK_IMGS = {
-    "Tech": "https://images.unsplash.com/photo-1550009158-9ebf69173e03?w=800&q=80",
-    "Home": "https://images.unsplash.com/photo-1584622050111-993a426fbf0a?w=800&q=80",
-    "Audio": "https://images.unsplash.com/photo-1546435770-a3e426bf472b?w=800&q=80",
+    "Tech": "https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=800&q=80",
+    "Home": "https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=800&q=80",
+    "Audio": "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=800&q=80",
     "Default": "https://images.unsplash.com/photo-1526738549149-8e07eca6c147?w=800&q=80"
 }
 
-# --- HELPER: RESOLVE SHORTLINKS ---
-def resolve_url(url):
-    """
-    Follows amzn.to or bit.ly links to find the REAL destination.
-    """
-    if "amzn.to" not in url and "bit.ly" not in url:
-        return url
-        
-    try:
-        # We make a HEAD request to follow the redirect without downloading the page
-        resp = requests.head(url, allow_redirects=True, timeout=5)
-        return resp.url
-    except:
-        return url
+# --- HELPER: EXTRACT IMAGE ---
+def extract_image(entry):
+    content = str(entry.get('summary', '')) + str(entry.get('content', ''))
+    match = re.search(r'<img[^>]+src="([^">]+)"', content)
+    if match: return match.group(1)
+    return None
 
 # --- HELPER: FIND ASIN ---
 def find_asin(text):
@@ -54,17 +46,26 @@ def find_asin(text):
         if match: return match.group(1)
     return None
 
-# --- HELPER: EXTRACT IMAGE ---
-def extract_image(entry):
-    content = str(entry.get('summary', '')) + str(entry.get('content', ''))
-    match = re.search(r'<img[^>]+src="([^">]+)"', content)
-    if match: return match.group(1)
-    return None
+# --- HELPER: GENERATE SMART SEARCH LINK ---
+def create_amazon_search_link(title):
+    """
+    Cleans the title and creates an Amazon Search URL with your Affiliate Tag.
+    """
+    # Remove junk words to make the search better
+    junk = ["sale", "deal", "price", "drop", "off", "coupon", "amazon", "at", "for", "only", "$", "lowest"]
+    words = title.lower().split()
+    clean_words = [w for w in words if w not in junk and not w.isdigit()]
+    
+    # Take the first 5 meaningful words (e.g., "Sony WH-1000XM5 Headphones Black")
+    search_query = " ".join(clean_words[:5])
+    encoded_query = urllib.parse.quote(search_query)
+    
+    return f"https://www.amazon.com/s?k={encoded_query}&tag={AMAZON_TAG}"
 
 # --- 1. INGEST ---
 def fetch_deals():
-    print("Fetching and Expanding Deals...")
-    valid_deals = []
+    print("Fetching deals with Fallback Strategy...")
+    raw_deals = []
     headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'}
     
     for source in config['sources']:
@@ -72,39 +73,45 @@ def fetch_deals():
             resp = requests.get(source['url'], headers=headers, timeout=10)
             feed = feedparser.parse(resp.content)
             
-            # Check more entries since we filter aggressively
-            for entry in feed.entries[:8]:
+            for entry in feed.entries[:6]: # Check top 6 from each source
                 
-                # 1. Check for ASIN in raw text first (Fastest)
+                # 1. Try to find Direct ASIN
                 blob = str(entry.link) + str(entry.get('summary', ''))
                 asin = find_asin(blob)
                 
-                # 2. If no ASIN, check if it's a Shortlink and Resolve it (Slower but necessary)
-                if not asin and ("amzn.to" in entry.link or "slickdeals" in entry.link):
-                    real_url = resolve_url(entry.link)
-                    asin = find_asin(real_url)
-                
                 if asin:
-                    # Match Found!
-                    money_link = f"https://www.amazon.com/dp/{asin}?tag={AMAZON_TAG}"
-                    img_url = extract_image(entry)
-                    
-                    valid_deals.append({
-                        "title": entry.title,
-                        "link": money_link,
-                        "img": img_url,
-                        "asin": asin,
-                        "source": source['name']
-                    })
-                    print(f"  [+] Found Amazon Product: {asin}")
-                    
+                    # BEST CASE: Direct Product Link
+                    final_link = f"https://www.amazon.com/dp/{asin}?tag={AMAZON_TAG}"
+                    match_type = "Direct"
+                else:
+                    # FALLBACK: Search Link
+                    final_link = create_amazon_search_link(entry.title)
+                    match_type = "Search"
+                
+                img_url = extract_image(entry)
+                
+                raw_deals.append({
+                    "title": entry.title,
+                    "link": final_link,
+                    "img": img_url,
+                    "type": match_type,
+                    "source": source['name']
+                })
+                
         except Exception as e:
-            print(f"Error {source['name']}: {e}")
+            print(f"Error reading {source['name']}: {e}")
             
     # Deduplicate
-    unique = {d['asin']:d for d in valid_deals}.values()
-    print(f"Total Unique Amazon Deals: {len(unique)}")
-    return list(unique)[:15]
+    seen = set()
+    unique = []
+    for d in raw_deals:
+        if d['title'] not in seen:
+            seen.add(d['title'])
+            unique.append(d)
+    
+    # Ensure we have plenty of deals (up to 18)
+    print(f"Found {len(unique)} deals total.")
+    return list(unique)[:18]
 
 # --- 2. AI ENRICHMENT ---
 def ai_enrich(deals):
@@ -113,11 +120,11 @@ def ai_enrich(deals):
     for deal in deals:
         try:
             prompt = f"""
-            Write for this Amazon deal: '{deal['title']}'.
+            Analyze deal: '{deal['title']}'.
             JSON Output:
-            - 'headline': Specific Product Name (max 6 words).
-            - 'why_good': 6-word punchy benefit.
-            - 'discount_guess': Estimate discount (e.g. "25% OFF").
+            - 'headline': Clean Product Name (max 6 words).
+            - 'why_good': 6-word benefit.
+            - 'discount_guess': Estimate discount (e.g. "Sale").
             - 'category': Tech, Home, or Audio.
             """
             resp = client.chat.completions.create(
@@ -128,6 +135,7 @@ def ai_enrich(deals):
             data = json.loads(resp.choices[0].message.content)
             deal.update(data)
             
+            # Assign Fallback Image if missing
             if not deal['img']:
                 deal['img'] = FALLBACK_IMGS.get(deal.get('category'), FALLBACK_IMGS['Default'])
                 
@@ -135,7 +143,7 @@ def ai_enrich(deals):
         except:
             deal['headline'] = deal['title'][:50]
             deal['why_good'] = "Check price on Amazon."
-            deal['discount_guess'] = "SALE"
+            deal['discount_guess'] = "DEAL"
             deal['category'] = "Tech"
             if not deal.get('img'): deal['img'] = FALLBACK_IMGS['Default']
             enriched.append(deal)
@@ -193,7 +201,7 @@ def generate_site(deals):
     """
     
     if not deals:
-        html += "<p style='grid-column: 1/-1; text-align: center;'>Scanning inventory... Please wait for next update.</p>"
+        html += "<p style='grid-column: 1/-1; text-align: center;'>System maintenance. Checking feeds...</p>"
         
     for deal in deals:
         html += f"""
