@@ -1,16 +1,18 @@
 project_name: "CircuitBreaker"
 currency: "USD"
 
-# We are now targeting specific "Store IDs" in these feeds.
-# Store ID 12029 = Amazon US.
 sources:
-  - name: "Amazon Tech Deals"
-    url: "https://slickdeals.net/newsearch.php?mode=popdeals&searcharea=deals&searchin=first&sort=newest&q=tech&storeid=12029&rss=1"
-  - name: "Amazon Home Deals"
-    url: "https://slickdeals.net/newsearch.php?mode=popdeals&searcharea=deals&searchin=first&sort=newest&q=home&storeid=12029&rss=1"
+  - name: "SlickDeals Tech"
+    url: "https://slickdeals.net/newsearch.php?mode=popdeals&searcharea=deals&searchin=first&sort=newest&q=tech&rss=1"
+  - name: "TheVerge Deals"
+    url: "https://www.theverge.com/rss/label/deals/index.xml"
+  - name: "Engadget Deals"
+    url: "https://www.engadget.com/deals/rss.xml"
+  - name: "BensBargains"
+    url: "https://bensbargains.com/rss/categories/electronics-5/"
 
 filters:
-  keywords_exclude: ["refurbished", "used", "ebay", "clothing", "finance"]
+  keywords_exclude: ["clothing", "finance", "used", "refurbished"]
   
 content:
-  deals_per_issue: 12
+  deals_per_issue: 15
